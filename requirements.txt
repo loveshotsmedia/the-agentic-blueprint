@@ -1,0 +1,36 @@
+# ─────────────────────────────────────────────────────────────
+# THE AGENTIC BLUEPRINT — Python Dependencies
+#
+# Install with: pip install -r requirements.txt
+# Or let Railway install them automatically on deploy.
+# ─────────────────────────────────────────────────────────────
+
+# ── Web framework ─────────────────────────────────────────────
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+python-multipart==0.0.9
+pydantic==2.8.2
+
+# ── Environment variables ────────────────────────────────────
+python-dotenv==1.0.1
+
+# ── AI — the brain ───────────────────────────────────────────
+anthropic==0.34.0
+
+# ── Database ─────────────────────────────────────────────────
+supabase==2.7.4
+
+# ── SMS ──────────────────────────────────────────────────────
+twilio==9.3.3
+
+# ── Calendar ─────────────────────────────────────────────────
+google-auth==2.34.0
+google-auth-httplib2==0.2.0
+google-api-python-client==2.143.0
+
+# ── HTTP client (for GHL adapter) ────────────────────────────
+httpx==0.27.2
+
+# ── Testing ──────────────────────────────────────────────────
+pytest==8.3.2
+pytest-asyncio==0.24.0

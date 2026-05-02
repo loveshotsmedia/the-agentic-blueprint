@@ -1,0 +1,45 @@
+# ─────────────────────────────────────────────────────────────
+# .gitignore
+#
+# Never commit these to GitHub.
+# ─────────────────────────────────────────────────────────────
+
+# Environment variables — NEVER commit this
+.env
+
+# Google service account credentials — NEVER commit this
+credentials/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+
+# State — runtime output, not source code
+state/traces/*
+state/decisions/*
+state/artifacts/*
+
+# Keep the folder structure but not the contents
+!state/traces/.gitkeep
+!state/decisions/.gitkeep
+!state/artifacts/.gitkeep
+!state/assumptions.md
+
+# Node / Playwright
+node_modules/
+playwright-report/
+test-results/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp

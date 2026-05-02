@@ -1,0 +1,125 @@
+{
+  "$schema": "the-agentic-blueprint/contract/v1",
+  "_comment": "THE QUOTE AGENT CONTRACT — takes the 5 intake fields, generates a price range, speaks it to the caller. Does nothing else.",
+
+  "agent": "quote-agent",
+  "model": "claude-haiku-4-5-20251001",
+  "trust_tier": 2,
+
+  "_trust_tier_note": "Tier 2 = GENERATE ONLY. Can read files and call LLM APIs. Cannot write to any database or external service. Zero side effects.",
+
+  "one_job": "Take the 5 fields from the planner output. Look up the price range in hvac-pricing/SKILL.md. Generate a quote. Write it to state/artifacts/. Do not book anything.",
+
+  "inputs": {
+    "plan_file_path": "state/artifacts/{call_sid}-plan.json",
+    "required_fields_in_plan": ["name", "address", "issue_type", "urgency", "property_type"]
+  },
+
+  "required_outputs": {
+    "quote_file": {
+      "path": "state/artifacts/{call_sid}-quote.json",
+      "required_fields": [
+        "call_sid",
+        "service_category",
+        "price_low",
+        "price_high",
+        "currency",
+        "quote_spoken_text",
+        "urgency_surcharge_applied",
+        "commercial_surcharge_applied",
+        "within_skill_range",
+        "created_at"
+      ],
+      "_comment": "within_skill_range must be true. If the generated price falls outside the ranges in hvac-pricing/SKILL.md the quote fails validation and must regenerate."
+    }
+  },
+
+  "completion_condition": {
+    "description": "Quote file exists, all fields present, price_low is less than price_high, within_skill_range is true, quote_spoken_text is a complete sentence the voice agent can read aloud.",
+    "verifiable_check": "file exists AND JSON parses AND price_low < price_high AND within_skill_range === true AND quote_spoken_text length > 20 characters",
+    "who_checks_this": "evaluator — never the quote agent itself"
+  },
+
+  "budget": {
+    "max_tokens_in": 5000,
+    "max_tokens_out": 500,
+    "max_tool_calls": 2,
+    "max_wall_clock_minutes": 0.5,
+    "max_cost_usd": 0.01,
+    "on_breach": "halt_and_log"
+  },
+
+  "permissions": {
+    "allowed": [
+      "read_file",
+      "_comment": "read_file is restricted to harness/skills/hvac-pricing/SKILL.md only"
+    ],
+    "forbidden": [
+      "supabase_query",
+      "supabase_write",
+      "calendar_write",
+      "calendar_read",
+      "sms_send",
+      "shell_exec",
+      "web_search",
+      "file_write_outside_artifacts"
+    ],
+    "can_spawn_child_agents": false
+  },
+
+  "pricing_rules": {
+    "_comment": "All price ranges live in harness/skills/hvac-pricing/SKILL.md. The quote agent reads that file. It never invents prices.",
+    "surcharges": {
+      "urgency_emergency": "add 25% to both low and high",
+      "property_commercial": "add 20% to both low and high",
+      "both_apply": "apply emergency surcharge first, then commercial"
+    },
+    "currency": "USD — always",
+    "format": "Always spoken as a range. Never a single number. Example: 'Based on what you described, a typical AC refrigerant recharge runs between $150 and $300.'"
+  },
+
+  "quote_spoken_text_rules": {
+    "must_include": [
+      "a reference to what the caller described",
+      "the price range as low-to-high",
+      "an invitation to book"
+    ],
+    "must_not_include": [
+      "exact single price (always a range)",
+      "guarantees ('it will definitely be')",
+      "competitor mentions",
+      "placeholder text like [NAME] or [PRICE]"
+    ],
+    "tone_emergency": "calm and direct — no excitement markers",
+    "tone_standard": "warm and helpful — match the bubbly default voice"
+  },
+
+  "failure_protocol": {
+    "level_1_recoverable": {
+      "trigger": "within_skill_range is false OR quote_spoken_text fails validation",
+      "action": "regenerate once — log which field failed to state/traces/",
+      "never_do": "do not adjust the skill ranges to make the quote pass — the ranges are correct, the generation was wrong"
+    },
+    "level_2_unrecoverable": {
+      "trigger": "3 attempts failed OR plan file missing required fields",
+      "action": "halt, log, surface to dashboard"
+    }
+  },
+
+  "what_this_agent_never_does": [
+    "Never writes to Supabase",
+    "Never touches the calendar",
+    "Never sends an SMS",
+    "Never invents a price not in hvac-pricing/SKILL.md",
+    "Never quotes a single fixed price — always a range",
+    "Never proceeds if any of the 5 intake fields are missing from the plan file",
+    "Never reads any file except hvac-pricing/SKILL.md and the plan file"
+  ],
+
+  "assumption_log": {
+    "assumption": "Claude Haiku can reliably generate quote spoken text that passes all validation rules without a dedicated fine-tuned model",
+    "review_date": "2026-07-30",
+    "expiry_test": "Run 100 quotes, measure validation pass rate on first attempt. Target: 97%+",
+    "kill_threshold": "If pass rate >= 99% — consider removing the regeneration retry to reduce latency"
+  }
+}

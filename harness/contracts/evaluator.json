@@ -1,0 +1,181 @@
+{
+  "$schema": "the-agentic-blueprint/contract/v1",
+  "_comment": "THE EVALUATOR CONTRACT — checks that every stage completed correctly. Read-only access to everything. Generates nothing. Fixes nothing. Only reports.",
+
+  "agent": "evaluator",
+  "model": "claude-haiku-4-5-20251001",
+  "trust_tier": 1,
+
+  "_trust_tier_note": "Tier 1 = READ ONLY. The lowest trust tier in the system. Cannot write anything anywhere. This is intentional. The evaluator's job is to observe and report — never to intervene.",
+
+  "one_job": "Read the artifacts from every completed stage. Check each one against its eval in quality/evals/. Write a pass/fail report to state/artifacts/. Surface any failure to the dashboard immediately.",
+
+  "_the_most_important_rule": "The evaluator is NEVER the same agent that generated the output it is checking. Ever. The factory QA department is independent from the production line. This is non-negotiable.",
+
+  "inputs": {
+    "call_sid": "string — the call identifier for this chain",
+    "plan_file_path": "state/artifacts/{call_sid}-plan.json",
+    "quote_file_path": "state/artifacts/{call_sid}-quote.json",
+    "booking_file_path": "state/artifacts/{call_sid}-booking.json"
+  },
+
+  "required_outputs": {
+    "eval_report": {
+      "path": "state/artifacts/{call_sid}-eval-report.json",
+      "required_fields": [
+        "call_sid",
+        "eval_01_intake_pass",
+        "eval_02_quote_pass",
+        "eval_03_emotion_pass",
+        "eval_04_booking_pass",
+        "eval_05_sms_pass",
+        "eval_06_full_chain_pass",
+        "failures",
+        "evaluated_at"
+      ],
+      "_comment": "failures is an array of objects. Each failure has: eval_id, field, expected, actual, severity. Empty array means full chain passed."
+    }
+  },
+
+  "completion_condition": {
+    "description": "Eval report exists at the correct path. All 6 eval fields are boolean. failures is a valid array. eval_06_full_chain_pass is true only if all of 01-05 are true.",
+    "verifiable_check": "file exists AND all eval fields are boolean AND eval_06 === (eval_01 && eval_02 && eval_03 && eval_04 && eval_05)",
+    "who_checks_this": "The deploy gate script in scripts/test.sh reads this file directly. No LLM involved in the final check."
+  },
+
+  "budget": {
+    "max_tokens_in": 15000,
+    "max_tokens_out": 2000,
+    "max_tool_calls": 8,
+    "max_wall_clock_minutes": 1,
+    "max_cost_usd": 0.02,
+    "on_breach": "halt_and_log — evaluator failure means we have no quality signal, surface immediately"
+  },
+
+  "permissions": {
+    "allowed": [
+      "read_file",
+      "supabase_query_readonly",
+      "calendar_read"
+    ],
+    "forbidden": [
+      "supabase_write",
+      "calendar_write",
+      "sms_send",
+      "shell_exec",
+      "file_write_outside_artifacts",
+      "web_search"
+    ],
+    "can_spawn_child_agents": false,
+    "_note": "The evaluator can read from Supabase and Google Calendar directly to verify that bookings actually exist — not just that the booking agent said they exist."
+  },
+
+  "the_six_evals": {
+    "eval_01_intake": {
+      "file": "quality/evals/01-intake.md",
+      "checks": [
+        "All 5 fields present in plan file",
+        "issue_type is one of: ac / heating / plumbing",
+        "urgency is one of: emergency / this_week / flexible",
+        "property_type is one of: home / commercial",
+        "No placeholder values like null, undefined, or empty string"
+      ],
+      "fail_severity": "BLOCKING — quote cannot run without all 5 fields"
+    },
+    "eval_02_quote": {
+      "file": "quality/evals/02-quote.md",
+      "checks": [
+        "price_low and price_high are numbers",
+        "price_low is less than price_high",
+        "within_skill_range is true",
+        "quote_spoken_text is a complete sentence",
+        "quote_spoken_text contains no placeholders",
+        "If urgency is emergency — urgency_surcharge_applied is true",
+        "If property_type is commercial — commercial_surcharge_applied is true"
+      ],
+      "fail_severity": "BLOCKING — do not book a job with a bad quote"
+    },
+    "eval_03_emotion": {
+      "file": "quality/evals/03-emotion.md",
+      "checks": [
+        "If transcript contains trigger words — quote_spoken_text tone is calm and direct",
+        "Calm tone means: no exclamation marks, no filler phrases like 'Absolutely!' or 'Great news!'",
+        "Standard tone means: warm and helpful language present"
+      ],
+      "fail_severity": "HIGH — does not block booking but must be logged and reviewed",
+      "_note": "This is the Karpathy jagged intelligence check. The agent that finds zero-day exploits will also sound excited when someone says their pipe burst. The eval catches it."
+    },
+    "eval_04_booking": {
+      "file": "quality/evals/04-booking.md",
+      "checks": [
+        "calendar_event_id is non-empty string",
+        "Event actually exists in Google Calendar — evaluator queries calendar directly",
+        "Calendar event contains: customer name, address, issue type, job time",
+        "supabase_job_id is valid UUID format",
+        "Job record actually exists in Supabase jobs table — evaluator queries directly",
+        "Supabase record matches calendar event details"
+      ],
+      "fail_severity": "CRITICAL — a booking that cannot be verified is a data integrity failure"
+    },
+    "eval_05_sms": {
+      "file": "quality/evals/05-sms.md",
+      "checks": [
+        "sms_message_sid is non-empty string",
+        "sms_delivered is true",
+        "SMS record exists in Supabase sms_log table",
+        "SMS content contains: customer name, job date, job time, address"
+      ],
+      "fail_severity": "HIGH — customer did not receive confirmation, requires manual follow-up"
+    },
+    "eval_06_full_chain": {
+      "file": "quality/evals/06-full-chain.md",
+      "checks": [
+        "eval_01 through eval_05 all passed",
+        "No BLOCKING failures in any eval",
+        "Total chain duration under 2 minutes wall clock",
+        "Total chain cost under $0.30"
+      ],
+      "fail_severity": "DEPLOY GATE — nothing ships until this passes",
+      "_note": "This is the only eval that blocks a deploy. Evals 01-05 are diagnostic. Eval 06 is the gate."
+    }
+  },
+
+  "failure_reporting": {
+    "blocking_failure": {
+      "action": "Write failure to eval_report. Surface to dashboard with BLOCKING badge. Do not mark eval_06 as pass.",
+      "dashboard_display": "Red banner — booking incomplete, advisor action required"
+    },
+    "high_severity_failure": {
+      "action": "Write failure to eval_report. Surface to dashboard with HIGH badge. Booking proceeds but flagged.",
+      "dashboard_display": "Yellow badge on booking card — review recommended"
+    },
+    "critical_failure": {
+      "action": "Write failure to eval_report. Immediately write to state/decisions/ with full context. Surface to dashboard with CRITICAL badge.",
+      "dashboard_display": "Red full-screen alert — data integrity issue, human action required now"
+    }
+  },
+
+  "playwright_integration": {
+    "_comment": "The evaluator runs inline after every call. The Playwright audit in quality/playwright/booking.spec.ts runs on a schedule and tests the full booking flow through the dashboard UI.",
+    "evaluator_runs": "After every call — automated, inline",
+    "playwright_runs": "On every deploy + on demand — tests the dashboard interface",
+    "both_must_pass": "Evaluator catches per-call failures. Playwright catches UI and integration failures. Different jobs. Both required."
+  },
+
+  "what_this_agent_never_does": [
+    "Never generates any content",
+    "Never fixes a failure it detects — it reports only",
+    "Never writes to Supabase (read-only access only)",
+    "Never modifies any artifact file it reads",
+    "Never marks eval_06 as pass if any of eval_01 through eval_05 failed",
+    "Never skips a check because a previous agent reported success",
+    "Never trusts the booking agent's self-report — always verifies directly against calendar and Supabase"
+  ],
+
+  "assumption_log": {
+    "assumption": "Direct Supabase and Google Calendar queries within the 1 minute wall clock budget are sufficient to verify booking existence",
+    "review_date": "2026-07-30",
+    "expiry_test": "Monitor evaluator wall clock time over 30 days. If p99 exceeds 50 seconds — investigate query optimization or async evaluation pattern.",
+    "kill_threshold": "If eval_03 (emotion) never catches a failure after 500 calls — reassess whether the check adds value or can be simplified"
+  }
+}

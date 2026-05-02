@@ -1,0 +1,153 @@
+{
+  "$schema": "the-agentic-blueprint/contract/v1",
+  "_comment": "THE BOOKING AGENT CONTRACT — takes the confirmed quote and books the job. Writes to calendar. Writes to Supabase. Sends SMS. In that exact order.",
+
+  "agent": "booking-agent",
+  "model": "claude-sonnet-4-6",
+  "trust_tier": 4,
+
+  "_trust_tier_note": "Tier 4 = WRITE EXTERNAL. Highest trust tier in the system. Has write access to Google Calendar, Supabase, and Twilio SMS. Every action it takes affects a real customer.",
+
+  "one_job": "Take the confirmed quote. Offer 3 time slots. Book the selected slot to Google Calendar. Write the job record to Supabase. Send SMS confirmation to the caller. Write the booking artifact to state/artifacts/.",
+
+  "inputs": {
+    "quote_file_path": "state/artifacts/{call_sid}-quote.json",
+    "plan_file_path": "state/artifacts/{call_sid}-plan.json",
+    "selected_slot": "string — ISO 8601 datetime the caller selected",
+    "caller_phone": "string — E.164 format for SMS delivery"
+  },
+
+  "required_outputs": {
+    "booking_file": {
+      "path": "state/artifacts/{call_sid}-booking.json",
+      "required_fields": [
+        "call_sid",
+        "calendar_event_id",
+        "calendar_destination",
+        "supabase_job_id",
+        "crm_destination",
+        "sms_message_sid",
+        "sms_delivered",
+        "booked_at",
+        "job_date",
+        "job_time",
+        "customer_name",
+        "customer_address",
+        "issue_type",
+        "quote_low",
+        "quote_high",
+        "created_at"
+      ]
+    }
+  },
+
+  "completion_condition": {
+    "description": "Booking file exists with all required fields. calendar_event_id is a non-empty string. supabase_job_id is a valid UUID. sms_delivered is true.",
+    "verifiable_check": "file exists AND calendar_event_id not empty AND supabase_job_id is UUID format AND sms_delivered === true",
+    "who_checks_this": "evaluator — reads from state/artifacts/ and queries Supabase and Google Calendar directly to verify"
+  },
+
+  "budget": {
+    "max_tokens_in": 8000,
+    "max_tokens_out": 1000,
+    "max_tool_calls": 6,
+    "max_wall_clock_minutes": 1,
+    "max_cost_usd": 0.05,
+    "on_breach": "halt_and_log — data integrity risk, do not retry automatically"
+  },
+
+  "permissions": {
+    "allowed": [
+      "read_file",
+      "calendar_write",
+      "calendar_read",
+      "supabase_write",
+      "supabase_query_readonly",
+      "sms_send"
+    ],
+    "forbidden": [
+      "shell_exec",
+      "file_write_outside_artifacts",
+      "web_search",
+      "email_send"
+    ],
+    "can_spawn_child_agents": false
+  },
+
+  "execution_order": {
+    "_comment": "This order is non-negotiable. If any step fails, halt before proceeding to the next.",
+    "step_1": "Read quote file and plan file from state/artifacts/",
+    "step_2": "Write event to Google Calendar (or GHL calendar if CALENDAR_DESTINATION=ghl_calendar)",
+    "step_3": "Confirm calendar_event_id returned — if empty or error, halt and log Level 3 failure",
+    "step_4": "Write job record to Supabase (or GHL if CRM_DESTINATION=ghl)",
+    "step_5": "Confirm supabase_job_id returned — if empty or error, log but continue to SMS",
+    "step_6": "Send SMS confirmation to caller_phone via Twilio",
+    "step_7": "Confirm sms_message_sid returned",
+    "step_8": "Write booking file to state/artifacts/{call_sid}-booking.json"
+  },
+
+  "why_calendar_before_supabase": "The calendar is the source of truth for when the technician shows up. If only Supabase writes and the calendar fails — the technician has no record of the job. Calendar first. Always.",
+
+  "adapter_routing": {
+    "calendar": {
+      "env_var": "CALENDAR_DESTINATION",
+      "supabase_value": "google",
+      "ghl_value": "ghl_calendar",
+      "adapter_path": "src/adapters/calendar/"
+    },
+    "crm": {
+      "env_var": "CRM_DESTINATION",
+      "supabase_value": "supabase",
+      "ghl_value": "ghl",
+      "adapter_path": "src/adapters/crm/"
+    },
+    "_comment": "The agent calls the adapter interface. It never checks the env var directly. The adapter handles the routing."
+  },
+
+  "sms_confirmation_template": {
+    "must_include": [
+      "customer first name",
+      "job date in human readable format (Monday, May 5th)",
+      "job time (10:00 AM)",
+      "service address",
+      "issue type",
+      "business name and callback number"
+    ],
+    "max_length": "320 characters — fits in 2 SMS segments",
+    "example": "Hi [Name], your [issue_type] appointment is confirmed for [date] at [time] at [address]. Questions? Call Rich Off AI HVAC: +1 (239) 294-2140"
+  },
+
+  "failure_protocol": {
+    "level_1_recoverable": {
+      "trigger": "SMS failed to deliver",
+      "action": "retry SMS once — calendar and Supabase writes already succeeded",
+      "log": "state/traces/{call_sid}-sms-retry.jsonl"
+    },
+    "level_2_unrecoverable": {
+      "trigger": "SMS failed twice",
+      "action": "halt, log, mark sms_delivered false in booking file, surface to dashboard for manual follow-up"
+    },
+    "level_3_data_integrity": {
+      "trigger": "Calendar write returned empty event ID OR Supabase write returned no job ID",
+      "action": "halt everything immediately — do not send SMS — do not write booking file — log to state/decisions/ with full context",
+      "why": "A booking that may or may not exist is worse than no booking. Human must verify before any customer communication goes out."
+    }
+  },
+
+  "what_this_agent_never_does": [
+    "Never writes to Supabase before confirming calendar write succeeded",
+    "Never sends SMS before confirming Supabase write succeeded",
+    "Never retries a Level 3 data integrity failure automatically",
+    "Never modifies an existing calendar event without explicit human instruction",
+    "Never sends SMS to a number that is not the original caller_phone",
+    "Never generates or modifies the quote — that is the quote agent's job",
+    "Never reads env vars directly — always uses the adapter interface"
+  ],
+
+  "assumption_log": {
+    "assumption": "Google Calendar API is available and returns a valid event ID within the 1 minute wall clock budget",
+    "review_date": "2026-07-30",
+    "expiry_test": "Monitor p99 calendar write latency over 30 days. If p99 exceeds 45 seconds — increase wall clock budget or add async booking pattern.",
+    "kill_threshold": "If calendar API reliability drops below 99.5% — evaluate adding a booking queue with retry logic"
+  }
+}

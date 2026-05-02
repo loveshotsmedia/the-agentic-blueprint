@@ -1,0 +1,110 @@
+{
+  "$schema": "the-agentic-blueprint/contract/v1",
+  "_comment": "THE PLANNER CONTRACT — reads the inbound call brief, breaks it into stages, writes a plan. Does nothing else.",
+
+  "agent": "planner",
+  "model": "claude-sonnet-4-6",
+  "trust_tier": 3,
+
+  "_trust_tier_note": "Tier 3 = WRITE INTERNAL. Can read files and write to Supabase. Cannot touch calendar, SMS, or external services.",
+
+  "one_job": "Read the inbound call brief. Break the call into stages. Write a plan to state/artifacts/. Do not execute anything.",
+
+  "inputs": {
+    "call_sid": "string — the Vapi call identifier",
+    "caller_phone": "string — E.164 format e.g. +12392942140",
+    "transcript_so_far": "string — raw transcript from Vapi webhook",
+    "advisor_id": "string — which business account this belongs to"
+  },
+
+  "required_outputs": {
+    "plan_file": {
+      "path": "state/artifacts/{call_sid}-plan.json",
+      "required_fields": [
+        "call_sid",
+        "stage_1_intake_complete",
+        "stage_2_quote_ready",
+        "stage_3_booking_ready",
+        "missing_fields",
+        "next_agent",
+        "created_at"
+      ],
+      "_comment": "missing_fields must be an array. Empty array means all 5 fields collected. Any field name in the array means that field still needs to be collected."
+    }
+  },
+
+  "completion_condition": {
+    "description": "The plan file exists at the correct path, contains all required fields, missing_fields is a valid array, and next_agent is one of: quote-agent, re-ask, escalate-to-human.",
+    "verifiable_check": "file exists at state/artifacts/{call_sid}-plan.json AND JSON parses without error AND missing_fields is array AND next_agent is valid enum value",
+    "who_checks_this": "evaluator — never the planner itself"
+  },
+
+  "budget": {
+    "max_tokens_in": 10000,
+    "max_tokens_out": 1000,
+    "max_tool_calls": 3,
+    "max_wall_clock_minutes": 0.5,
+    "max_cost_usd": 0.02,
+    "on_breach": "halt_and_log — write to state/traces/, surface to dashboard, do not retry automatically"
+  },
+
+  "permissions": {
+    "allowed": [
+      "read_file",
+      "supabase_query_readonly"
+    ],
+    "forbidden": [
+      "supabase_write",
+      "calendar_write",
+      "calendar_read",
+      "sms_send",
+      "shell_exec",
+      "file_write_outside_artifacts"
+    ],
+    "can_spawn_child_agents": false
+  },
+
+  "the_five_fields": {
+    "_comment": "The planner checks whether all 5 fields exist in the transcript. If any are missing they go into missing_fields array.",
+    "name": "caller full name",
+    "address": "service address",
+    "issue_type": "one of: ac / heating / plumbing",
+    "urgency": "one of: emergency / this_week / flexible",
+    "property_type": "one of: home / commercial"
+  },
+
+  "next_agent_rules": {
+    "all_5_fields_present": "next_agent = quote-agent",
+    "1_to_4_fields_missing": "next_agent = re-ask — list missing fields so voice agent knows what to ask",
+    "caller_distressed_or_safety_concern": "next_agent = escalate-to-human — do not attempt quote generation"
+  },
+
+  "failure_protocol": {
+    "level_1_recoverable": {
+      "trigger": "plan file missing a required field",
+      "action": "broaden by one axis, retry once",
+      "log": "state/traces/{call_sid}-planner-failure.jsonl"
+    },
+    "level_2_unrecoverable": {
+      "trigger": "3 attempts failed",
+      "action": "halt, log, surface to dashboard, wait for human",
+      "log": "state/traces/{call_sid}-planner-unrecoverable.jsonl"
+    }
+  },
+
+  "what_this_agent_never_does": [
+    "Never generates a quote",
+    "Never writes to Google Calendar",
+    "Never sends an SMS",
+    "Never modifies vision.md, AGENTS.md, or RUNTIME.md",
+    "Never proceeds if the output file path is wrong",
+    "Never marks missing_fields as empty if any of the 5 fields are absent"
+  ],
+
+  "assumption_log": {
+    "assumption": "Claude Sonnet can reliably extract 5 structured fields from a voice transcript without a specialized extraction model",
+    "review_date": "2026-07-30",
+    "expiry_test": "Run 100 real transcripts, measure field extraction accuracy. If below 95% — evaluate fine-tuning or a dedicated extraction step.",
+    "kill_threshold": "If accuracy >= 98% on a cheaper model (Haiku) — downgrade model tier and reduce cost"
+  }
+}
